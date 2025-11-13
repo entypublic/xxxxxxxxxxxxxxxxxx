@@ -105,22 +105,35 @@ else
   SNI_LIST=("${DEFAULT_SNI_LIST[@]}")
 fi
 
-# Проверим поддержку TLSv1.3 у доменов (оставим только валидные)
+# Настройки проверки SNI (ENV): SNI_VALIDATE=1 включает проверку TLSv1.3; SNI_TIMEOUT (сек)
+SNI_VALIDATE=${SNI_VALIDATE:-0}
+SNI_TIMEOUT=${SNI_TIMEOUT:-2}
+
+# Проверка TLSv1.3 (опционально) или использование списка как есть
 VALID_SNIS=()
-for sni in "${SNI_LIST[@]}"; do
-  OPENSSL_OUTPUT=$(timeout 3 openssl s_client -connect "$sni":443 -brief 2>&1)
-  if echo "$OPENSSL_OUTPUT" | grep -q "TLSv1.3"; then
-    VALID_SNIS+=("$sni")
-  fi
-done
+if [[ "$SNI_VALIDATE" == "1" ]]; then
+  echo "Проверяю TLSv1.3 (таймаут ${SNI_TIMEOUT}s) для ${#SNI_LIST[@]} доменов..."
+  for sni in "${SNI_LIST[@]}"; do
+    OPENSSL_OUTPUT=$(timeout "${SNI_TIMEOUT}" openssl s_client -connect "$sni":443 -servername "$sni" -brief 2>&1)
+    if echo "$OPENSSL_OUTPUT" | grep -q "TLSv1.3"; then
+      VALID_SNIS+=("$sni")
+      echo "[OK] $sni"
+    else
+      echo "[SKIP] $sni"
+    fi
+  done
+  echo "Итого валидных: ${#VALID_SNIS[@]}/${#SNI_LIST[@]}"
+else
+  VALID_SNIS=("${SNI_LIST[@]}")
+fi
 
 if (( ${#VALID_SNIS[@]} == 0 )); then
-  echo "Предупреждение: ни один домен из списка не подтвердил TLSv1.3. Использую www.yahoo.com как SNI по умолчанию."
+  echo "Предупреждение: список SNI пуст. Использую www.yahoo.com как SNI по умолчанию."
   VALID_SNIS=("www.yahoo.com")
 fi
 
-# Выберем первый валидный SNI как dest для Reality
-DEST_SNI="${VALID_SNIS[0]}"
+# Выберем dest для Reality: ENV DEST_SNI имеет приоритет, иначе первый из списка
+DEST_SNI=${DEST_SNI:-${VALID_SNIS[0]}}
 echo "Reality dest будет: $DEST_SNI"
 echo
 # Автовыбор порта SS (ENV SS_PORT имеет приоритет)
@@ -140,7 +153,6 @@ fi
 
 # prepare config file
 cp ./config.json.template /usr/local/etc/xray/config.json
-sed -i "s|SERVER_IP|${SERVER_IP}|g" /usr/local/etc/xray/config.json
 sed -i "s|VLESS_PORT|${VLESS_PORT}|g" /usr/local/etc/xray/config.json
 sed -i "s|UUID|${UUID}|g" /usr/local/etc/xray/config.json
 sed -i "s|PRIVATE_KEY|${PRIVATE_KEY}|g" /usr/local/etc/xray/config.json
