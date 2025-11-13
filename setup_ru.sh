@@ -18,35 +18,31 @@ while true; do
   fi
 done
 PUBLIC_IP=$(curl -s ipinfo.io/ip)
-clear
-while true; do
-  read -p "Введи внешний IP этого сервера (или нажми Enter, чтобы использовать ${PUBLIC_IP}): " SERVER_IP
-  SERVER_IP=${SERVER_IP:-${PUBLIC_IP}}
-  if ip a | grep -q "$SERVER_IP"; then
-    break
-  else
-    echo "Ошибка: адрес не назначен ни на один сетевой интерфейс."
-  fi
-done
-echo
-while true; do
-  read -p "Введи порт для VLESS (или нажми Enter, чтобы использовать рекомендуемый 443): " VLESS_PORT
+# Автовыбор SERVER_IP без вопросов (ENV SERVER_IP имеет приоритет)
+SERVER_IP=${SERVER_IP:-${PUBLIC_IP}}
+
+# Утилита: проверка свободного порта
+is_port_free() {
+  local port=$1
+  ss -tln | grep -q ":${port} " && return 1 || return 0
+}
+
+# Автовыбор порта VLESS (ENV VLESS_PORT имеет приоритет)
+if [[ -z "${VLESS_PORT:-}" ]]; then
+  CANDIDATES=(443 8443 4443 2053 7443)
+  for p in "${CANDIDATES[@]}"; do
+    if is_port_free "$p"; then VLESS_PORT=$p; break; fi
+  done
   VLESS_PORT=${VLESS_PORT:-443}
-  if ! [[ $VLESS_PORT =~ ^[0-9]+$ ]]; then
-    echo "Ошибка: необходимо указать число."
-    continue
+else
+  # Если указан ENV, но порт занят — подберём ближайший свободный
+  if ! is_port_free "$VLESS_PORT"; then
+    for p in 443 8443 4443 2053 7443; do
+      if is_port_free "$p"; then VLESS_PORT=$p; break; fi
+    done
   fi
-  if (( VLESS_PORT < 1 || VLESS_PORT > 49151 )); then
-    echo "Ошибка: порт должен быть из допустимого диапазона."
-    continue
-  fi
-  if ss -tln | grep -q ":$VLESS_PORT "; then
-    echo "Ошибка: порт занят, укажи другой."
-    continue
-  fi
-  break
-done
-echo
+fi
+
 echo
 # Подготовка списка SNI (по умолчанию — предоставленный список)
 DEFAULT_SNI_LIST=(
@@ -101,14 +97,11 @@ DEFAULT_SNI_LIST=(
   "lemanapro.ru"
 )
 
-echo "Укажи домены для SNI через пробел (или нажми Enter, чтобы использовать встроенный список):"
-read -r CUSTOM_SNIS
-
-if [[ -n "$CUSTOM_SNIS" ]]; then
-  # Пользовательский список
-  IFS=' ' read -r -a SNI_LIST <<< "$CUSTOM_SNIS"
+# Выбор SNI без вопросов: ENV SNI_LIST (через пробел) имеет приоритет,
+# иначе используется встроенный список
+if [[ -n "${SNI_LIST:-}" ]]; then
+  IFS=' ' read -r -a SNI_LIST <<< "${SNI_LIST}"
 else
-  # Встроенный список
   SNI_LIST=("${DEFAULT_SNI_LIST[@]}")
 fi
 
@@ -130,23 +123,20 @@ fi
 DEST_SNI="${VALID_SNIS[0]}"
 echo "Reality dest будет: $DEST_SNI"
 echo
-while true; do
-  read -p "Введи порт для Shadowsocks (или нажми Enter, чтобы использовать 8888): " SS_PORT
+# Автовыбор порта SS (ENV SS_PORT имеет приоритет)
+if [[ -z "${SS_PORT:-}" ]]; then
+  SSCANDS=(8888 8889 8890 4444 8388)
+  for p in "${SSCANDS[@]}"; do
+    if is_port_free "$p"; then SS_PORT=$p; break; fi
+  done
   SS_PORT=${SS_PORT:-8888}
-  if ! [[ $SS_PORT =~ ^[0-9]+$ ]]; then
-    echo "Ошибка: необходимо указать число."
-    continue
+else
+  if ! is_port_free "$SS_PORT"; then
+    for p in 8888 8889 8890 4444 8388; do
+      if is_port_free "$p"; then SS_PORT=$p; break; fi
+    done
   fi
-  if (( SS_PORT < 1 || SS_PORT > 49151 )); then
-    echo "Ошибка: порт должен быть из допустимого диапазона."
-    continue
-  fi
-  if ss -tln | grep -q ":$SS_PORT "; then
-    echo "Ошибка: порт занят, укажи другой."
-    continue
-  fi
-  break
-done
+fi
 
 # prepare config file
 cp ./config.json.template /usr/local/etc/xray/config.json
@@ -173,6 +163,12 @@ SHORT_IDS_JSON="${SHORT_IDS_JSON%,}]"       # убрать последнюю з
 
 sed -i "s|SERVER_NAMES_JSON|${SERVER_NAMES_JSON}|g" /usr/local/etc/xray/config.json
 sed -i "s|SHORT_IDS_JSON|${SHORT_IDS_JSON}|g" /usr/local/etc/xray/config.json
+
+# Резюме выбранных параметров
+echo "Использую SERVER_IP: ${SERVER_IP}"
+echo "Порт VLESS: ${VLESS_PORT}"
+echo "Порт Shadowsocks: ${SS_PORT}"
+echo "Кол-во валидных SNI: ${#VALID_SNIS[@]}"
 
 # apply settings
 systemctl restart xray
